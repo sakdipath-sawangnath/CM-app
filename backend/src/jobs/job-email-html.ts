@@ -5,6 +5,10 @@ export type JobEmailPayload = {
   requestTicketNo?: string | null;
   /** แสดงในอีเมล: หัวข้อหรือรายละเอียดข้อขัดข้อง (title ก่อน แล้วค่อย description) */
   issueSummary: string | null;
+  /** ป้ายชื่อหัวข้อเหตุขัดข้อง เช่น "เครื่องวิทยุรับสัญญาณไม่ได้" */
+  incidentCategoryLabel?: string | null;
+  /** รายละเอียดข้อขัดข้องเพิ่มเติม (ถ้ามี) */
+  description?: string | null;
   province: string | null;
   district: string | null;
   /** สถานที่/หน่วยงาน (denormalize จาก Site) */
@@ -126,7 +130,15 @@ function wrapBody(opts: {
             <td style="padding:0 16px 8px;">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
                 ${rowText('เลขที่ใบแจ้ง', esc(payload.ticketNo))}
-                ${rowText('เรื่อง / ข้อขัดข้อง', esc(payload.issueSummary))}
+                ${
+                  payload.incidentCategoryLabel
+                    ? `${rowText('หัวข้อเหตุขัดข้อง', esc(payload.incidentCategoryLabel))}${
+                        payload.description?.trim()
+                          ? rowText('รายละเอียดเพิ่มเติม', esc(payload.description.trim()))
+                          : ''
+                      }`
+                    : rowText('เรื่อง / ข้อขัดข้อง', esc(payload.issueSummary))
+                }
                 ${rowText('สถานที่', esc(loc))}
                 ${rowText('ประเภทสถานที่', esc(payload.fixEnvironmentLabel))}
                 ${rowText('ประเภทงาน', esc(payload.jobTypeLabel))}
@@ -162,7 +174,7 @@ function wrapBody(opts: {
 /** ต่อท้าย subject ด้วยที่ตั้งสั้นๆ ให้สแกนกล่องจดหมายรู้เรื่อง */
 function subjectLocationSuffix(p: JobEmailPayload): string {
   const line = formatLocationLine(p).replace(/ · /g, ' - ');
-  if (!line.trim()) return '';
+  if (!line.trim() || line.trim() === '—') return '';
   const max = 42;
   const short = line.length > max ? `${line.slice(0, max - 1)}…` : line;
   return ` · ${short}`;

@@ -135,6 +135,7 @@ export class JobEmailNotificationService {
         ticketNo: true,
         requestTicketNo: true,
         title: true,
+        incidentCategory: true,
         description: true,
         status: true,
         province: true,
@@ -161,14 +162,20 @@ export class JobEmailNotificationService {
     const st = String(job.status ?? '');
     const statusLabel = STATUS_TH[st] ?? st;
 
+    const catLabel = job.incidentCategory
+      ? getIncidentCategoryLabel(job.incidentCategory)
+      : null;
+
     return {
       ticketNo: job.ticketNo ?? job.requestTicketNo,
       requestTicketNo: job.requestTicketNo,
       issueSummary: pickIssueSummary(
         job.title,
         job.description,
-        (job as { incidentCategory?: string | null }).incidentCategory,
+        job.incidentCategory,
       ),
+      incidentCategoryLabel: catLabel,
+      description: job.description,
       province: job.province,
       district: job.district,
       agency: job.agency,
@@ -244,17 +251,23 @@ export class JobEmailNotificationService {
       if (!job) return;
 
       const primary = this.reporterPrimaryEmail(job);
-      const to = this.uniqueEmails([primary], block.toExtra);
-      if (to.length === 0) {
-        this.logger.warn(
-          `notifyReported(${jobId}): ข้าม — ไม่มีอีเมลผู้แจ้งและ To เพิ่มเติม`,
-        );
-        return;
-      }
+      let to = this.uniqueEmails([primary], block.toExtra);
       const roleEmails = await this.getEmailsForUserRoles(
         block.notifyRoleIds ?? [],
       );
-      const cc = this.filterCc([...block.cc, ...roleEmails], to);
+      let cc = this.filterCc([...block.cc, ...roleEmails], to);
+
+      if (to.length === 0) {
+        if (cc.length === 0) {
+          this.logger.warn(
+            `notifyReported(${jobId}): ข้าม — ไม่มีอีเมลผู้รับ (ทั้งผู้แจ้ง, To เพิ่มเติม, CC หรือบทบาท)`,
+          );
+          return;
+        }
+        // เมื่อผู้แจ้งไม่ได้ระบุอีเมล และไม่มี To เพิ่มเติม แต่มี CC หรือบทบาทผู้ใช้ ให้ส่งหา CC ในฐานะ To แทน
+        to = cc;
+        cc = [];
+      }
 
       const payload = await this.buildPayload(jobId);
       if (!payload) return;
@@ -308,17 +321,23 @@ export class JobEmailNotificationService {
             ? job.fixerEmail!.trim()
             : null;
 
-      const to = this.uniqueEmails([primary], block.toExtra);
-      if (to.length === 0) {
-        this.logger.warn(
-          `notifyAssigned(${jobId}): ข้าม — ไม่มีอีเมลผู้รับงานและ To เพิ่มเติม`,
-        );
-        return;
-      }
+      let to = this.uniqueEmails([primary], block.toExtra);
       const roleEmails = await this.getEmailsForUserRoles(
         block.notifyRoleIds ?? [],
       );
-      const cc = this.filterCc([...block.cc, ...roleEmails], to);
+      let cc = this.filterCc([...block.cc, ...roleEmails], to);
+
+      if (to.length === 0) {
+        if (cc.length === 0) {
+          this.logger.warn(
+            `notifyAssigned(${jobId}): ข้าม — ไม่มีอีเมลผู้รับ (ทั้งผู้รับงาน, To เพิ่มเติม, CC หรือบทบาท)`,
+          );
+          return;
+        }
+        // เมื่อไม่มีอีเมลผู้รับงาน และไม่มี To เพิ่มเติม แต่มี CC หรือบทบาทผู้ใช้ ให้ส่งหา CC ในฐานะ To แทน
+        to = cc;
+        cc = [];
+      }
 
       const payload = await this.buildPayload(jobId);
       if (!payload) return;
@@ -369,12 +388,6 @@ export class JobEmailNotificationService {
 
       const primary = this.reporterPrimaryEmail(job);
       const toReporter = this.uniqueEmails([primary], block.toExtra);
-      if (toReporter.length === 0) {
-        this.logger.warn(
-          `notifyClosed(${jobId}): ข้าม — ไม่มีอีเมลผู้แจ้งและ To เพิ่มเติม`,
-        );
-        return;
-      }
       const roleEmails = await this.getEmailsForUserRoles(
         block.notifyRoleIds ?? [],
       );
@@ -384,6 +397,13 @@ export class JobEmailNotificationService {
         toReporter,
       );
 
+      if (toReporter.length === 0 && ccRecipients.length === 0) {
+        this.logger.warn(
+          `notifyClosed(${jobId}): ข้าม — ไม่มีอีเมลผู้รับ (ทั้งผู้แจ้ง, To เพิ่มเติม, CC หรือบทบาท)`,
+        );
+        return;
+      }
+
       const payload = await this.buildPayload(jobId);
       if (!payload) return;
 
@@ -392,15 +412,17 @@ export class JobEmailNotificationService {
         templates.brandingLogoUrl,
       );
 
-      // 1) ผู้รับหลัก: อีเมลผู้แจ้ง (ไม่แนบ PDF)
-      await this.mailService.sendHtmlMail(smtp, {
-        to: toReporter,
-        subject,
-        html,
-        text,
-      });
+      // 1) ผู้รับหลัก: อีเมลผู้แจ้ง (ไม่แนบ PDF) — ส่งเมื่อมีอีเมลผู้แจ้งหรือ To เพิ่มเติม
+      if (toReporter.length > 0) {
+        await this.mailService.sendHtmlMail(smtp, {
+          to: toReporter,
+          subject,
+          html,
+          text,
+        });
+      }
 
-      // 2) แจ้งเตือนผู้ใช้ในบทบาท/CC: แนบ PDF (รูปแบบเดียวกับเอกสาร /print/jobs/:id)
+      // 2) แจ้งเตือนผู้ใช้ในบทบาท/CC: แนบ PDF (รูปแบบเดียวกับเอกสาร /print/jobs/:id) — ส่งเมื่อมี CC หรือบทบาท
       if (ccRecipients.length > 0) {
         let pdf: Buffer | null = null;
         try {
